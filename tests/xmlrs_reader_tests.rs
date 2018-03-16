@@ -316,6 +316,7 @@ fn test(input: &[u8], output: &[u8], is_short: bool) {
                 let e = reader.read_namespaced_event(&mut buf, &mut ns_buffer);
                 format!("{}", OptEvent(e))
             };
+            let line = line.replace(r"\r\n", r"\n");
             if let Some((n, spec)) = spec_lines.next() {
                 if spec == "EndDocument" {
                     break;

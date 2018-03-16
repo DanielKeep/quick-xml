@@ -22,7 +22,7 @@ macro_rules! next_eq_content {
     ($r: expr, $t:tt, $bytes:expr) => {
         let mut buf = Vec::new();
         match $r.read_event(&mut buf).unwrap() {
-            $t(ref e) if &**e == $bytes => (),
+            $t(ref e) if &**e == &$bytes[..] => (),
             e => panic!("expecting {}({:?}), found {:?}", stringify!($t), from_utf8($bytes), e),
         }
         buf.clear();
@@ -34,11 +34,50 @@ macro_rules! next_eq {
     ($r:expr, End, $bytes:expr) => (next_eq_name!($r, End, $bytes););
     ($r:expr, Empty, $bytes:expr) => (next_eq_name!($r, Empty, $bytes););
     ($r:expr, Comment, $bytes:expr) => (next_eq_content!($r, Comment, $bytes););
+    ($r:expr, Decl, $bytes:expr) => (next_eq_content!($r, Decl, $bytes););
     ($r:expr, Text, $bytes:expr) => (next_eq_content!($r, Text, $bytes););
     ($r:expr, CData, $bytes:expr) => (next_eq_content!($r, CData, $bytes););
     ($r:expr, $t0:tt, $b0:expr, $($t:tt, $bytes:expr),*) => {
         next_eq!($r, $t0, $b0);
         next_eq!($r, $($t, $bytes),*);
+    };
+}
+
+macro_rules! next_eq_pos {
+    ($r:expr, $(,)*) => {};
+    ($r:expr, @$line:tt:$col:tt, $kind:tt, $bytes:expr) => {
+        {
+            use quick_xml::util::Position;
+            let pos_got = $r.position();
+            next_eq!($r, $kind, $bytes);
+            let pos_exp = Position::new_one($line, $col);
+            if pos_got != pos_exp {
+                panic!("expecting position {}, found {}", pos_exp, pos_got);
+            }
+        }
+    };
+    ($r:expr, @$line:tt:$col:tt;$off:tt, $kind:tt, $bytes:expr) => {
+        {
+            let off_got = $r.buffer_position();
+            next_eq_pos!($r, @$line:$col, $kind, $bytes);
+            let off_exp = $off;
+            if off_got != off_exp {
+                panic!("expecting offset {}, found {}", off_exp, off_got);
+            }
+        }
+    };
+    ($r:expr, @$line:tt:$col:tt;$off:tt, $t0:tt, $b0:expr, $($rest:tt)*) => {
+        next_eq_pos!($r, @$line:$col;$off, $t0, $b0);
+        next_eq_pos!($r, $($rest)*);
+    };
+    ($r:expr, @$line:tt:$col:tt, $t0:tt, $b0:expr, $($rest:tt)*) => {
+        next_eq_pos!($r, @$line:$col, $t0, $b0);
+        next_eq_pos!($r, $($rest)*);
+    };
+    ($r:expr, $kind:tt, $bytes:expr) => (next_eq!($r, $kind, $bytes););
+    ($r:expr, $t0:tt, $b0:expr, $($rest:tt)*) => {
+        next_eq_pos!($r, $t0, $b0);
+        next_eq_pos!($r, $($rest)*);
     };
 }
 
@@ -54,6 +93,13 @@ fn test_start_end() {
     let mut r = Reader::from_str("<a></a>");
     r.trim_text(true);
     next_eq!(r, Start, b"a", End, b"a");
+}
+
+#[test]
+fn test_start_end_pos() {
+    let mut r = Reader::from_str("<a></a>").with_position_tracking();
+    r.trim_text(true);
+    next_eq_pos!(r, @1:1, Start, b"a", @1:4, End, b"a");
 }
 
 #[test]
@@ -100,6 +146,21 @@ fn test_start_end_comment() {
         b"t",
         End,
         b"b"
+    );
+}
+
+#[test]
+fn test_start_end_comment_pos() {
+    let mut r = Reader::from_str("<b><a b=\"test\" c=\"test\"/> <a  /><!--t--></b>")
+        .with_position_tracking();
+    r.trim_text(true).expand_empty_elements(false);
+    next_eq_pos!(
+        r,
+        @1:1, Start, b"b",
+        @1:4, Empty, b"a",
+        @1:26, Empty, b"a",
+        @1:33, Comment, b"t",
+        @1:41, End, b"b",
     );
 }
 
@@ -265,7 +326,8 @@ fn test_writer_borrow() {
 #[test]
 fn test_writer_indent() {
     let txt = include_str!("../tests/documents/test_writer_indent.xml");
-    let mut reader = Reader::from_str(txt);
+    let txt = txt.replace("\r\n", "\n");
+    let mut reader = Reader::from_str(&txt);
     reader.trim_text(true);
     let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 4);
     let mut buf = Vec::new();
@@ -709,6 +771,32 @@ fn test_read_write_roundtrip_escape_text() {
 
     let result = writer.into_inner().into_inner();
     assert_eq!(String::from_utf8(result).unwrap(), input.to_string());
+}
+
+#[test]
+fn test_multiline_pos() {
+    let input = r#"
+        <?xml version="1.0" encoding="UTF-8"?>
+        <section ns:label="header">
+            <section ns:label="empty element section" />
+            <section ns:label="start/end section"></section>
+            <section ns:label="with text">data &lt;escaped&gt;</section>
+            </section>
+    "#;
+
+    println!("input: {:?}", input.as_bytes());
+
+    let mut reader = Reader::from_str(input).with_position_tracking();
+    reader.trim_text(false).expand_empty_elements(false);
+    next_eq_pos!(
+        reader,
+        @1:1;0, Text, b"\n        ",
+        // Expects 10... **wat**
+        @2:11;9, Decl, b"xml version=\"1.0\" encoding=\"UTF-8\"",
+        @3:8, Text, b"\n        ",
+        @1:33, Comment, b"t",
+        @1:41, End, b"b",
+    );
 }
 
 #[test]

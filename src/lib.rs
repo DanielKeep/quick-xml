@@ -115,6 +115,7 @@ mod reader;
 mod writer;
 pub mod events;
 mod escape;
+pub mod util;
 
 // reexports
 pub use writer::Writer;

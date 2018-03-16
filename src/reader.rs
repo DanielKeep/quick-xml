@@ -11,6 +11,7 @@ use encoding_rs::Encoding;
 use errors::{Error, Result};
 use events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use events::attributes::Attribute;
+use util::{Position, PositionRead, PositionResolve};
 
 use memchr;
 
@@ -102,6 +103,27 @@ impl<B: BufRead> Reader<B> {
             check_comments: false,
             ns_buffer: NamespaceBufferIndex::default(),
             encoding: ::encoding_rs::UTF_8,
+        }
+    }
+
+    /// Wraps the underlying `BufRead` with a line position tracker.
+    pub fn with_position_tracking(self) -> Reader<PositionRead<B>> {
+        if self.buf_position != 0 {
+            panic!("Reader::with_position_tracking must be called before reading");
+        }
+        Reader {
+            reader: PositionRead::new(self.reader),
+            exit: self.exit,
+            opened_buffer: self.opened_buffer,
+            opened_starts: self.opened_starts,
+            tag_state: self.tag_state,
+            expand_empty_elements: self.expand_empty_elements,
+            trim_text: self.trim_text,
+            check_end_names: self.check_end_names,
+            buf_position: self.buf_position,
+            check_comments: self.check_comments,
+            ns_buffer: self.ns_buffer,
+            encoding: self.encoding,
         }
     }
 
@@ -690,6 +712,18 @@ impl<B: BufRead> Reader<B> {
         };
         self.read_to_end(end, buf)?;
         s
+    }
+}
+
+impl<B: BufRead + PositionResolve> Reader<B> {
+    /// Gets the current position in the input data.
+    pub fn position(&self) -> Position {
+        self.position_at(self.buffer_position())
+    }
+
+    /// Gets the position of a specific byte within the input.
+    pub fn position_at(&self, buffer_position: usize) -> Position {
+        self.reader.resolve(buffer_position as u64)
     }
 }
 
